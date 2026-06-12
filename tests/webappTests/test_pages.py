@@ -3,6 +3,7 @@
 import json
 
 import mireport
+from digital_converter_webapp import create_app
 
 
 class TestHomePage:
@@ -48,6 +49,27 @@ class TestLocales:
         body = json.loads(resp.data)
         for entry in body:
             assert "label" in entry
+
+
+class TestBrokenConfig:
+    def test_unusable_session_config_yields_broken_app(self):
+        # Session backend selection sees test_config: a deployment with no
+        # usable SESSION_TYPE must degrade to the 503 brokenApp, not limp on
+        app = create_app({"TESTING": True, "DEPLOYMENT": "production"})
+        resp = app.test_client().get("/")
+        assert resp.status_code == 503
+
+
+class TestDebugSession:
+    def test_not_found_when_debug_off(self, client):
+        resp = client.get("/debug_session")
+        assert resp.status_code == 404
+
+    def test_available_when_debug_on(self, app, client, monkeypatch):
+        monkeypatch.setitem(app.config, "DEBUG", True)
+        resp = client.get("/debug_session")
+        assert resp.status_code == 200
+        assert resp.is_json
 
 
 class TestDeploymentHeader:

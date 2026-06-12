@@ -8,6 +8,7 @@ from mireport.stringutil import (
     str_to_markupsafe,
     stripLabelPrefix,
     stripLabelSuffix,
+    truthy,
     unicodeDashNormalization,
     unicodeSpaceNormalize,
     xml_clean,
@@ -361,3 +362,29 @@ class TestStrToMarkupsafe:
     def test_trailing_newline_omitted(self) -> None:
         # splitlines() does not produce an empty trailing element for a final newline
         assert str_to_markupsafe("line1\n") == Markup("line1")
+
+
+class TestTruthy:
+    @pytest.mark.parametrize(
+        "value",
+        ["1", "true", "TRUE", " True ", "yes", "YES", "on", True, 1],
+    )
+    def test_truthy_values(self, value: str | bool | int) -> None:
+        assert truthy(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        ["0", "false", "False", "no", "off", "", " ", "garbage", False, 0, None],
+    )
+    def test_falsy_values(self, value: str | bool | int | None) -> None:
+        assert truthy(value) is False
+
+    @pytest.mark.parametrize("value", [-1, 2, 42])
+    def test_out_of_range_ints_raise(self, value: int) -> None:
+        with pytest.raises(ValueError):
+            truthy(value)
+
+    @pytest.mark.parametrize("value", [[], ["true"], {}, {"a": 1}, 1.0, object()])
+    def test_unsupported_types_raise(self, value: object) -> None:
+        with pytest.raises(TypeError):
+            truthy(value)  # type: ignore[arg-type]

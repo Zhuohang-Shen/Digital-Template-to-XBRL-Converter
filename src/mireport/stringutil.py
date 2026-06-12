@@ -146,3 +146,27 @@ def xml_clean(data: str) -> str:
 def str_to_markupsafe(text: str) -> Markup:
     """Convert a (possibly multiline) string to a Markup object, escaping it for safe HTML display. Newlines are converted to <br /> tags."""
     return Markup("<br />").join(Markup.escape(p) for p in text.splitlines())
+
+
+_TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+
+
+def truthy(value: str | bool | int | None) -> bool:
+    """Interpret config/query-style values as booleans ("false" is False).
+
+    Unrecognised strings are False (right for query params); ints other than
+    0/1 raise ValueError and unsupported types raise TypeError rather than
+    guessing."""
+    match value:
+        case bool() | None:
+            return bool(value)
+        case str():
+            return value.strip().lower() in _TRUTHY_STRINGS
+        case int() if value in (0, 1):
+            return bool(value)
+        case int():
+            raise ValueError(
+                f"Cannot interpret {value!r} as a boolean. Try 1 or 0 instead."
+            )
+        case _:
+            raise TypeError(f"Cannot interpret {value!r} as a boolean")

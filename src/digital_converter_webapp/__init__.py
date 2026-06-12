@@ -5,10 +5,12 @@ from random import randint
 from secrets import token_hex
 from typing import Any
 
+from cachelib.file import FileSystemCache
 from dotenv import load_dotenv
 from flask import (
     Flask,
     Response,
+    abort,
     current_app,
     flash,
     jsonify,
@@ -42,6 +44,7 @@ from mireport.localise import (
     get_locale_list,
 )
 from mireport.report.theme import ColourPalette, DisplayMode, ReportTheme
+from mireport.stringutil import truthy
 from mireport.taxonomy import getTaxonomy, listTaxonomies
 from mireport.xlsx_template_reader.processor import (
     VSME_DEFAULTS,
@@ -55,21 +58,14 @@ from .migration import (
     checkMigration,
 )
 
-ENABLE_CAPTCHA = False
-ENABLE_MIGRATION = False
 MAX_LIVE_CAPTCHAS = 20  # answers kept per session (multiple tabs/reloads)
 MAX_FILE_SIZE = 16 * 2**20  # 16 MiB
 DEPLOYMENT_DATETIME = datetime.now(timezone.utc)
-LOCALE_JSON: list[dict[str, str]]
 
 L = logging.getLogger(__name__)
 
 
 def create_app(test_config: Mapping[str, Any] | None = None) -> Flask:
-    # Regardless of how we are invoked, make sure to load configuration from any
-    # ".env" file
-    load_dotenv()
-
     # Get logging working
     logging.basicConfig(
         format="%(asctime)s %(levelname)-8s %(message)s",
@@ -81,70 +77,27 @@ def create_app(test_config: Mapping[str, Any] | None = None) -> Flask:
     # Get taxonomy related objects loaded
     loadBuiltInTaxonomyJSON()
 
-    global LOCALE_JSON
-    LOCALE_JSON = make_locale_json()
-
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE
-    app.config.from_prefixed_env()
-
-    global ENABLE_CAPTCHA
-    ENABLE_CAPTCHA = bool(app.config.get("ENABLE_CAPTCHA", False))
-
-    global ENABLE_MIGRATION
-    ENABLE_MIGRATION = (
-        bool(app.config.get("ENABLE_MIGRATION", False)) and MIGRATION_WORKING
-    )
-
-    if (
-        "development" == app.config.get("DEPLOYMENT", "development")
-        and "SESSION_TYPE" not in app.config
-    ):
-        # DEVELOPER MODE. Insecure. DO NOT USE IN PRODUCTION.
-        app.config.from_mapping(
-            SECRET_KEY="dev",
-            SESSION_TYPE="filesystem",
-            SESSION_FILE_DIR="flask_session",
-            SESSION_PERMANENT=True,
-            PERMANENT_SESSION_LIFETIME=timedelta(hours=1),
-        )
-        L.critical("Deployed in DEVELOPER mode. Insecure.")
-    elif app.config["SESSION_TYPE"] == "redis" and "SESSION_REDIS" not in app.config:
-        try:
-            try:
-                from flask_rq import RQ
-                from redis import ConnectionError, Redis  # type: ignore
-            except ImportError:
-                L.critical(
-                    "Redis and/or RQ support isn't available. App startup aborted. You need to fix your configuration.".upper()
-                )
-                return brokenApp()
-
-            redisUrl = app.config.get("REDIS_URL", "redis://127.0.0.1:6379")
-            try:
-                rs = Redis.from_url(redisUrl)
-                rs.ping()
-            except ConnectionError:
-                L.critical(
-                    "Redis isn't running. App startup aborted. You need to fix your configuration.".upper()
-                )
-                return brokenApp()
-
-            # Should have a working Redis connection and RQ instance at this point.
-            app.config["SESSION_REDIS"] = rs
-            app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=1)
-            rq = RQ()
-            rq.init_app(app)
-
-        except Exception as e:
-            L.critical(
-                "An unknown exception occurred while configuring support for redis and RQ. App startup aborted. You need to fix your configuration.".upper(),
-                exc_info=e,
-            )
-            return brokenApp()
+    app.config["LOCALE_JSON"] = make_locale_json()
+    if test_config is not None:
+        # Tests are hermetic: only the supplied config, never the developer's
+        # ".env" (e.g. redis sessions, captcha on) or FLASK_* environment.
+        app.config.from_mapping(test_config)
     else:
-        L.critical(f"Can't work with current configuration. {app.config=}")
+        # Load configuration from any ".env" file plus FLASK_* environment
+        # variables.
+        load_dotenv()
+        app.config.from_prefixed_env()
+
+    if not _configure_session_backend(app):
         return brokenApp()
+
+    # Normalise feature flags so request-time checks can rely on real booleans
+    app.config["ENABLE_CAPTCHA"] = truthy(app.config.get("ENABLE_CAPTCHA", False))
+    app.config["ENABLE_MIGRATION"] = (
+        truthy(app.config.get("ENABLE_MIGRATION", False)) and MIGRATION_WORKING
+    )
 
     # app looks to be working, install routes
     app.register_blueprint(convert_bp, url_prefix=app.config.get("PREFIX", "/"))
@@ -181,6 +134,78 @@ def create_app(test_config: Mapping[str, Any] | None = None) -> Flask:
     # Use server-side sessions
     Session(app)
     return app
+
+
+def _configure_session_backend(app: Flask) -> bool:
+    """Configure server-side session storage (filesystem in developer mode,
+    redis otherwise). Returns False if the configuration is unusable."""
+    if (
+        "development" == app.config.get("DEPLOYMENT", "development")
+        and "SESSION_TYPE" not in app.config
+    ):
+        # DEVELOPER MODE. Insecure. DO NOT USE IN PRODUCTION.
+        # Defaults that respect any SECRET_KEY/SESSION_CACHELIB already
+        # configured (e.g. by a test config). "cachelib" with an explicit
+        # FileSystemCache replaces the deprecated "filesystem" backend.
+        if "SESSION_FILE_DIR" in app.config:
+            L.warning(
+                "SESSION_FILE_DIR is no longer supported and will be ignored;"
+                " set SESSION_CACHELIB to a cachelib instance instead."
+            )
+        app.config.from_mapping(
+            SECRET_KEY=app.config.get("SECRET_KEY") or "dev",
+            SESSION_TYPE="cachelib",
+            SESSION_CACHELIB=app.config.get("SESSION_CACHELIB")
+            or FileSystemCache("flask_session", threshold=500),
+            SESSION_PERMANENT=True,
+            PERMANENT_SESSION_LIFETIME=timedelta(hours=1),
+        )
+        L.critical("Deployed in DEVELOPER mode. Insecure.")
+        return True
+
+    if app.config.get("SESSION_TYPE") == "redis" and "SESSION_REDIS" not in app.config:
+        return _configure_redis_sessions(app)
+
+    L.critical(f"Can't work with current configuration. {app.config=}")
+    return False
+
+
+def _configure_redis_sessions(app: Flask) -> bool:
+    """Connect to redis for session storage and set up RQ. Returns False if
+    redis support is unavailable or the connection fails."""
+    try:
+        try:
+            from flask_rq import RQ
+            from redis import ConnectionError, Redis  # type: ignore
+        except ImportError:
+            L.critical(
+                "Redis and/or RQ support isn't available. App startup aborted. You need to fix your configuration.".upper()
+            )
+            return False
+
+        redisUrl = app.config.get("REDIS_URL", "redis://127.0.0.1:6379")
+        try:
+            rs = Redis.from_url(redisUrl)
+            rs.ping()
+        except ConnectionError:
+            L.critical(
+                "Redis isn't running. App startup aborted. You need to fix your configuration.".upper()
+            )
+            return False
+
+        # Should have a working Redis connection and RQ instance at this point.
+        app.config["SESSION_REDIS"] = rs
+        app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=1)
+        rq = RQ()
+        rq.init_app(app)
+        return True
+
+    except Exception as e:
+        L.critical(
+            "An unknown exception occurred while configuring support for redis and RQ. App startup aborted. You need to fix your configuration.".upper(),
+            exc_info=e,
+        )
+        return False
 
 
 def brokenApp() -> Flask:
@@ -236,14 +261,15 @@ def format_timedelta(td: timedelta) -> str:
 
 @convert_bp.route("/")
 def index() -> Response:
+    enable_captcha = current_app.config["ENABLE_CAPTCHA"]
     captcha_id, captcha_question = (
-        generate_captcha() if ENABLE_CAPTCHA else (None, None)
+        generate_captcha() if enable_captcha else (None, None)
     )
     return Response(
         render_template(
             "excel-to-xbrl-converter.html.jinja",
             existing_conversions=hasConversions(),
-            ENABLE_CAPTCHA=ENABLE_CAPTCHA,
+            ENABLE_CAPTCHA=enable_captcha,
             captcha_id=captcha_id,
             captcha_question=captcha_question,
             colour_palettes=list(ColourPalette),
@@ -308,11 +334,13 @@ def make_locale_json() -> list[dict[str, str]]:
 
 @convert_bp.route(f"/locales/available_{mireport.__version__}.json")
 def available_locales() -> Response:
-    return jsonify(LOCALE_JSON)
+    return jsonify(current_app.config["LOCALE_JSON"])
 
 
 @convert_bp.route("/debug_session")
 def debug_session() -> Response:
+    if not current_app.debug:
+        abort(404)
     session.modified = True  # Ensure session is saved
     interesting: dict[str, Any] = {
         "session_id": request.cookies.get("session"),
@@ -351,7 +379,7 @@ def upload() -> Response:
     if "file" not in request.files:
         return make_response({"error": "No file part"}, 400)
 
-    if ENABLE_CAPTCHA is True:
+    if current_app.config["ENABLE_CAPTCHA"]:
         # Validate captcha (single use: the answer is removed on first attempt)
         captcha_input = request.form.get("captcha", type=int)
         captcha_id = request.form.get("captcha_id", "")
@@ -428,11 +456,7 @@ def upload() -> Response:
 @convert_bp.route("/conversions/<string:id>", methods=["GET"])
 def convert(id: str) -> Response:
     try:
-        skip_migration = request.args.get("skip_migration", "").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
+        skip_migration = truthy(request.args.get("skip_migration", ""))
 
         if id not in session:
             return make_response(
@@ -448,7 +472,7 @@ def convert(id: str) -> Response:
         if "results" not in conversion:
             if (
                 not skip_migration
-                and ENABLE_MIGRATION
+                and current_app.config["ENABLE_MIGRATION"]
                 and (migrationResponse := checkMigration(conversion)) is not None
             ):
                 # Migration deemed to be required so no conversion done at this stage.
@@ -461,7 +485,7 @@ def convert(id: str) -> Response:
         results = ConversionResults.fromDict(conversion["results"])
         devInfo = request.args.get("show_developer_messages") == "true"
 
-        offer_migration: bool = ENABLE_MIGRATION and (
+        offer_migration: bool = current_app.config["ENABLE_MIGRATION"] and (
             conversion.get("migration_outcome", "")
             == str(MigrationOutcome.MIGRATION_OPTIONAL)
         )

@@ -1,26 +1,14 @@
-"""Captcha behaviour with ENABLE_CAPTCHA on and off.
-
-ENABLE_CAPTCHA is a module-level global read at request time, so monkeypatching
-it on the existing app is sufficient (and automatically undone) — no second app
-or environment juggling needed.
-"""
+"""Captcha behaviour with ENABLE_CAPTCHA on (captcha_client fixture) and off
+(plain client fixture)."""
 
 import io
 import re
 
-import pytest
 from flask import session
 
-import digital_converter_webapp
 from digital_converter_webapp import MAX_LIVE_CAPTCHAS, generate_captcha
 
 _QUESTION = re.compile(r"What is (\d+) \+ (\d+)\?")
-
-
-@pytest.fixture()
-def captcha_client(app, monkeypatch):
-    monkeypatch.setattr(digital_converter_webapp, "ENABLE_CAPTCHA", True)
-    return app.test_client()
 
 
 def _hidden_field(html: str, name: str) -> str:
