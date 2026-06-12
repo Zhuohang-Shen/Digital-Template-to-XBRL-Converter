@@ -57,6 +57,7 @@ from .migration import (
 
 ENABLE_CAPTCHA = False
 ENABLE_MIGRATION = False
+MAX_LIVE_CAPTCHAS = 20  # answers kept per session (multiple tabs/reloads)
 MAX_FILE_SIZE = 16 * 2**20  # 16 MiB
 DEPLOYMENT_DATETIME = datetime.now(timezone.utc)
 LOCALE_JSON: list[dict[str, str]]
@@ -104,7 +105,7 @@ def create_app(test_config: Mapping[str, Any] | None = None) -> Flask:
             SECRET_KEY="dev",
             SESSION_TYPE="filesystem",
             SESSION_FILE_DIR="flask_session",
-            SESSION_PERMANENT="False",
+            SESSION_PERMANENT=True,
             PERMANENT_SESSION_LIFETIME=timedelta(hours=1),
         )
         L.critical("Deployed in DEVELOPER mode. Insecure.")
@@ -235,11 +236,16 @@ def format_timedelta(td: timedelta) -> str:
 
 @convert_bp.route("/")
 def index() -> Response:
+    captcha_id, captcha_question = (
+        generate_captcha() if ENABLE_CAPTCHA else (None, None)
+    )
     return Response(
         render_template(
             "excel-to-xbrl-converter.html.jinja",
             existing_conversions=hasConversions(),
             ENABLE_CAPTCHA=ENABLE_CAPTCHA,
+            captcha_id=captcha_id,
+            captcha_question=captcha_question,
             colour_palettes=list(ColourPalette),
             default_palette=ReportTheme.DEFAULT_COLOUR,
         )
@@ -256,15 +262,22 @@ def request_entity_too_large(error: type[Exception] | int) -> Response:
     )
 
 
-@convert_bp.route("/generate_captcha", methods=["GET"])
-def generate_captcha() -> dict:
-    """Generate a simple math captcha and store the answer in the session."""
+def generate_captcha() -> tuple[str, str]:
+    """Generate a simple math captcha and stash its answer in the session.
+
+    Answers are kept in an id-keyed map (capped at MAX_LIVE_CAPTCHAS, oldest
+    evicted first) so concurrently open forms (multiple tabs, reloads) each
+    validate against their own question.
+    """
     num1 = randint(1, 10)
     num2 = randint(1, 10)
-    session.pop("captcha_answer", None)
-    session["captcha_answer"] = num1 + num2
+    captcha_id = token_hex(8)
+    answers = session.setdefault("captcha_answers", {})
+    answers[captcha_id] = num1 + num2
+    while len(answers) > MAX_LIVE_CAPTCHAS:
+        answers.pop(next(iter(answers)))
     session.modified = True
-    return {"question": f"What is {num1} + {num2}?"}
+    return captcha_id, f"What is {num1} + {num2}?"
 
 
 @convert_bp.before_request
@@ -339,10 +352,12 @@ def upload() -> Response:
         return make_response({"error": "No file part"}, 400)
 
     if ENABLE_CAPTCHA is True:
-        # Validate captcha
+        # Validate captcha (single use: the answer is removed on first attempt)
         captcha_input = request.form.get("captcha", type=int)
-        captcha_answer = session.pop("captcha_answer", None)
-        if not captcha_answer or captcha_input != captcha_answer:
+        captcha_id = request.form.get("captcha_id", "")
+        captcha_answer = session.get("captcha_answers", {}).pop(captcha_id, None)
+        session.modified = True
+        if captcha_answer is None or captcha_input != captcha_answer:
             flash(
                 message="Invalid captcha. Please confirm you are human by calculating the correct result and try again.",
                 category="error",
@@ -611,7 +626,7 @@ def getConversions() -> dict[str, Any]:
     conversions = {
         key: value
         for key, value in session.items()
-        if key not in {"_permanent", "csrf_token", "captcha_answer"}
+        if key not in {"_permanent", "csrf_token", "captcha_answers"}
     }
     # Strip out any "conversions" that are actually aborted as they turned in to
     # mandatory migrations

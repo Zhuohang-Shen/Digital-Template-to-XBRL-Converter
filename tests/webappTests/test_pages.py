@@ -29,22 +29,6 @@ class TestConversionsList:
         assert resp.status_code == 404
 
 
-class TestCaptcha:
-    def test_captcha_returns_200(self, client):
-        resp = client.get("/generate_captcha")
-        assert resp.status_code == 200
-
-    def test_captcha_returns_json_with_question(self, client):
-        resp = client.get("/generate_captcha")
-        body = json.loads(resp.data)
-        assert "question" in body
-
-    def test_captcha_question_contains_plus(self, client):
-        resp = client.get("/generate_captcha")
-        body = json.loads(resp.data)
-        assert "+" in body["question"]
-
-
 class TestLocales:
     def test_locales_json_loads(self, client):
         url = f"/locales/available_{mireport.__version__}.json"
