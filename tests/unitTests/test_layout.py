@@ -4,7 +4,11 @@ import logging
 from datetime import date
 from unittest.mock import MagicMock
 
-from mireport.report.disclosure_layout import _move_sections_after, _old_vsme_prefix
+from mireport.report.disclosure_layout import (
+    OldVsmeLayoutStrategy,
+    _move_sections_after,
+    _old_vsme_section_code,
+)
 from mireport.report.fact import Fact
 from mireport.report.layout import (
     ReportLayoutOrganiser,
@@ -24,9 +28,6 @@ from mireport.taxonomy import (
     Relationship,
     Taxonomy,
 )
-
-# ── Test doubles ─────────────────────────────────────────────────────────────
-
 
 def _fact(
     *, numeric=False, unit=None, period=None, concept=None, aspects=None, value="x"
@@ -54,19 +55,18 @@ def _organiser(facts_by_concept=None, presentation_groups=None):
     return ReportLayoutOrganiser(taxonomy, report)
 
 
-def _section(definition: str, style=PresentationStyle.List):
+def _section(definition: str, style=PresentationStyle.List, label=None):
     pres = MagicMock()
     pres.definition = definition
     pres.style = style
     pres.roleUri = definition
     pres.relationships = []
+    pres.getLabel.return_value = definition if label is None else label
     return ReportSection(relationshipToFact={}, presentation=pres)
 
 
 _DUR = DurationPeriodHolder(start=date(2024, 1, 1), end=date(2024, 12, 31))
 _INST = InstantPeriodHolder(instant=date(2024, 12, 31))
-
-# ── TableHeadingCell ──────────────────────────────────────────────────────────
 
 
 class TestTableHeadingCell:
@@ -113,9 +113,6 @@ class TestTableHeadingCell:
         assert not cell.isConcept
 
 
-# ── _table_unit ───────────────────────────────────────────────────────────────
-
-
 class TestGetTableUnit:
     def test_empty_data(self):
         assert _table_unit([]) is None
@@ -151,9 +148,6 @@ class TestGetTableUnit:
         assert _table_unit([[f_num, f_text]]) == "EUR"
 
 
-# ── _table_period ─────────────────────────────────────────────────────────────
-
-
 class TestGetTablePeriod:
     def test_empty_data(self):
         assert _table_period([]) is None
@@ -174,9 +168,6 @@ class TestGetTablePeriod:
         f1 = _fact(period=_DUR)
         f2 = _fact(period=_INST)
         assert _table_period([[f1, f2]]) is None
-
-
-# ── _column_units ─────────────────────────────────────────────────────────────
 
 
 class TestGetColumnUnits:
@@ -218,9 +209,6 @@ class TestGetColumnUnits:
         assert result == []
 
 
-# ── _column_periods ───────────────────────────────────────────────────────────
-
-
 class TestGetColumnPeriods:
     def test_empty_data(self):
         assert _column_periods([]) == []
@@ -252,28 +240,72 @@ class TestGetColumnPeriods:
         assert result == [_DUR, None]
 
 
-# ── _sectionPrefix ────────────────────────────────────────────────────────────
-
-
-class TestSectionPrefix:
-    def test_extracts_prefix_before_dot(self):
+class TestOldVsmeSectionCode:
+    def test_extracts_and_dezeropads(self):
         s = _section("[B02.Group Name")
-        assert _old_vsme_prefix(s) == "[B02"
+        assert _old_vsme_section_code(s) == "B2"
 
     def test_multiple_dots_only_first_split(self):
         s = _section("[C02.foo.bar.baz")
-        assert _old_vsme_prefix(s) == "[C02"
+        assert _old_vsme_section_code(s) == "C2"
 
-    def test_no_dot_returns_whole_string(self):
-        s = _section("[B02]")
-        assert _old_vsme_prefix(s) == "[B02]"
+    def test_full_old_vsme_definition(self):
+        s = _section("[B07.000] - General information - Basis for Preparation")
+        assert _old_vsme_section_code(s) == "B7"
 
-    def test_empty_definition(self):
+    def test_multi_digit_not_zero_stripped(self):
+        s = _section("[B10.x")
+        assert _old_vsme_section_code(s) == "B10"
+
+    def test_empty_definition(self, caplog):
         s = _section("")
-        assert _old_vsme_prefix(s) == ""
+        with caplog.at_level(
+            logging.WARNING, logger="mireport.report.disclosure_layout"
+        ):
+            assert _old_vsme_section_code(s) == ""
+        assert any("does not match" in r.message for r in caplog.records)
+
+    def test_non_conforming_token_falls_back_and_warns(self, caplog):
+        s = _section("[General.x")
+        with caplog.at_level(
+            logging.WARNING, logger="mireport.report.disclosure_layout"
+        ):
+            assert _old_vsme_section_code(s) == "General"
+        assert any("does not match" in r.message for r in caplog.records)
+
+    def test_conforming_code_does_not_warn(self, caplog):
+        s = _section("[B07.000] - General information")
+        with caplog.at_level(
+            logging.WARNING, logger="mireport.report.disclosure_layout"
+        ):
+            assert _old_vsme_section_code(s) == "B7"
+        assert not caplog.records
 
 
-# ── _move_sections_after ──────────────────────────────────────────────────────
+class TestOldVsmeSectionLabel:
+    def test_replaces_prefix_with_code(self):
+        s = _section("[C06.000] - General information - Basis for Preparation")
+        assert (
+            OldVsmeLayoutStrategy().section_label(s, "en")
+            == "C6 - General information - Basis for Preparation"
+        )
+
+    def test_two_part_label(self):
+        s = _section("[B01.000] - General information")
+        assert (
+            OldVsmeLayoutStrategy().section_label(s, "en") == "B1 - General information"
+        )
+
+    def test_label_differs_from_definition(self):
+        # code comes from the definition; the descriptive text from the label
+        s = _section(
+            "[C06.000] - ignored",
+            label="[C06.000] - Workforce - General characteristics",
+        )
+        assert (
+            OldVsmeLayoutStrategy().section_label(s, "en")
+            == "C6 - Workforce - General characteristics"
+        )
 
 
 class TestMoveSectionsAfter:
@@ -281,24 +313,24 @@ class TestMoveSectionsAfter:
         o = _organiser()
         sections = [_section("[A01.x"), _section("[B02.x")]
         o.reportSections = sections[:]
-        o.reportSections = _move_sections_after(o.reportSections, "[C02", "[B02")
+        o.reportSections = _move_sections_after(o.reportSections, "C2", "B2")
         assert o.reportSections == sections
 
     def test_target_not_present_leaves_sections_unchanged(self):
         o = _organiser()
         sections = [_section("[A01.x"), _section("[C02.x")]
         o.reportSections = sections[:]
-        o.reportSections = _move_sections_after(o.reportSections, "[C02", "[B02")
+        o.reportSections = _move_sections_after(o.reportSections, "C2", "B2")
         assert o.reportSections == sections
 
-    def test_moves_source_after_last_target(self):
+    def test_moves_source_after_target(self):
         o = _organiser()
         a = _section("[A01.x")
         b = _section("[B02.x")
         c = _section("[C02.x")
         d = _section("[D03.x")
         o.reportSections = [a, c, b, d]
-        o.reportSections = _move_sections_after(o.reportSections, "[C02", "[B02")
+        o.reportSections = _move_sections_after(o.reportSections, "C2", "B2")
         assert o.reportSections == [a, b, c, d]
 
     def test_multiple_source_sections_all_move_together(self):
@@ -309,8 +341,21 @@ class TestMoveSectionsAfter:
         c2 = _section("[C02.x2")
         d = _section("[D03.x")
         o.reportSections = [a, c1, c2, b, d]
-        o.reportSections = _move_sections_after(o.reportSections, "[C02", "[B02")
+        o.reportSections = _move_sections_after(o.reportSections, "C2", "B2")
         assert o.reportSections == [a, b, c1, c2, d]
+
+    def test_inserts_after_last_section_of_target_group(self):
+        # Target group (B2) has two rows; source must land after BOTH, not
+        # wedged into the middle of the group.
+        o = _organiser()
+        a = _section("[A01.x")
+        c = _section("[C02.x")
+        b1 = _section("[B02.x1")
+        b2 = _section("[B02.x2")
+        d = _section("[D03.x")
+        o.reportSections = [a, c, b1, b2, d]
+        o.reportSections = _move_sections_after(o.reportSections, "C2", "B2")
+        assert o.reportSections == [a, b1, b2, c, d]
 
     def test_source_already_after_target_stays_in_place(self):
         o = _organiser()
@@ -318,11 +363,8 @@ class TestMoveSectionsAfter:
         b = _section("[B02.x")
         c = _section("[C02.x")
         o.reportSections = [a, b, c]
-        o.reportSections = _move_sections_after(o.reportSections, "[C02", "[B02")
+        o.reportSections = _move_sections_after(o.reportSections, "C2", "B2")
         assert o.reportSections == [a, b, c]
-
-
-# ── checkAllFactsUsed ─────────────────────────────────────────────────────────
 
 
 class TestCheckAllFactsUsed:
@@ -356,9 +398,6 @@ class TestCheckAllFactsUsed:
         with caplog.at_level(logging.WARNING, logger="mireport.report.layout"):
             o.checkAllFactsUsed()
         assert any("inconsistent" in r.message.lower() for r in caplog.records)
-
-
-# ── createReportSections ──────────────────────────────────────────────────────
 
 
 class TestCreateReportSections:
@@ -424,9 +463,6 @@ class TestCreateReportSections:
         included = o.reportSections[0].relationshipToFact[rel]
         assert plain in included
         assert dimensional in included
-
-
-# ── _assemble_explicit_dim_as_columns ─────────────────────────────────────────
 
 
 class TestAssembleDimsAsColumnTable:
@@ -518,9 +554,6 @@ class TestAssembleDimsAsColumnTable:
         assert matrix.row_labels == [reportable[1]]
 
 
-# ── _assemble_explicit_dim_as_rows ────────────────────────────────────────────
-
-
 class TestAssembleDimsAsRowsTable:
     def _setup(self):
         dim_qname = object()
@@ -592,9 +625,6 @@ class TestAssembleDimsAsRowsTable:
             "[B01.test", reportable, explicit_dim, domain, None
         )
         assert member_b not in matrix.row_labels
-
-
-# ── _assemble_typed_dim ───────────────────────────────────────────────────────
 
 
 class TestAssembleTypedDimTable:

@@ -116,33 +116,41 @@ _VSME_SECTION_AFFINITY: dict[str, str] = {
 }
 
 
-def _old_vsme_prefix(section: ReportSection) -> str:
-    return section.presentation.definition.split(".")[0]
+def _old_vsme_section_code(section: ReportSection) -> str:
+    """Canonical short code for an old-VSME section definition,
+    e.g. '[B07.000] - General information …' -> 'B7'.
 
-
-def _short_vsme_prefix(prefix: str) -> str:
-    """Shorten an old VSME group prefix, e.g. '[B07' -> 'B7'."""
-    raw = prefix.removeprefix("[")
-    if (suffix := raw[1:]).isdigit():
-        return raw[0] + str(int(suffix))
-    return raw
+    Falls back to the raw token (minus any leading '[') when it doesn't match
+    the expected <letter><digits> shape."""
+    token = section.presentation.definition.split(".", 1)[0].removeprefix("[")
+    if (digits := token[1:]).isdigit():
+        return f"{token[0]}{int(digits)}"
+    L.warning(
+        "Old-VSME section definition %r does not match the expected"
+        " <letter><digits> shape; using %r as its section code.",
+        section.presentation.definition,
+        token,
+    )
+    return token
 
 
 def _move_sections_after(
-    sections: list[ReportSection], source_prefix: str, target_prefix: str
+    sections: list[ReportSection], source: str, target: str
 ) -> list[ReportSection]:
-    prefixes = {id(s): _old_vsme_prefix(s) for s in sections}
-    to_move = [s for s in sections if prefixes[id(s)] == source_prefix]
-    if not to_move:
-        return sections
-    remaining = [s for s in sections if prefixes[id(s)] != source_prefix]
-    insert_pos = next(
-        (i + 1 for i, s in enumerate(remaining) if prefixes[id(s)] == target_prefix),
-        None,
+    """Move every section whose code is `source` to immediately after the last
+    section whose code is `target`. No-op if either group is absent."""
+    coded = [(s, _old_vsme_section_code(s)) for s in sections]
+    to_move = [s for s, code in coded if code == source]
+    remaining = [s for s, code in coded if code != source]
+    last_target = max(
+        (i for i, (_, code) in enumerate(coded) if code == target and code != source),
+        default=None,
     )
-    if insert_pos is None:
+    if not to_move or last_target is None:
         return sections
-    return remaining[:insert_pos] + to_move + remaining[insert_pos:]
+    # last_target indexes `coded`; translate to an index within `remaining`
+    insert_at = sum(1 for _, code in coded[: last_target + 1] if code != source)
+    return remaining[:insert_at] + to_move + remaining[insert_at:]
 
 
 def _split_label(label: str) -> list[str]:
@@ -159,11 +167,18 @@ class OldVsmeLayoutStrategy(DisclosureLayoutStrategy, strategy_name="old_vsme"):
     """Handles definitions like '[B01.000] - General information - Basis for Preparation'."""
 
     def organise_sections(self, sections: list[ReportSection]) -> list[ReportSection]:
-        return _move_sections_after(sections, "[C02", "[B02")
+        return _move_sections_after(sections, "C2", "B2")
+
+    def section_label(self, section: ReportSection, language: str) -> str:
+        """Replace the '[C06.000]' prefix with the canonical code, e.g.
+        '[C06.000] - General - Basis' -> 'C6 - General - Basis'."""
+        code = _old_vsme_section_code(section)
+        _, *rest = _split_label(section.getLabel(language))
+        return " - ".join([code, *rest])
 
     def page_group_key(self, section: ReportSection, language: str) -> str:
-        short = _short_vsme_prefix(_old_vsme_prefix(section))
-        return _VSME_SECTION_AFFINITY.get(short, short)
+        code = _old_vsme_section_code(section)
+        return _VSME_SECTION_AFFINITY.get(code, code)
 
     def build_toc(
         self,
@@ -171,9 +186,9 @@ class OldVsmeLayoutStrategy(DisclosureLayoutStrategy, strategy_name="old_vsme"):
         language: str,
     ) -> list[TocGroup]:
         groups: list[TocGroup] = []
-        for prefix, group_iter in groupby(
+        for code, group_iter in groupby(
             enumerate(sections, start=1),
-            key=lambda t: _old_vsme_prefix(t[1]),
+            key=lambda t: _old_vsme_section_code(t[1]),
         ):
             labelled = [
                 (idx, _split_label(s.getLabel(language))) for idx, s in group_iter
@@ -183,7 +198,7 @@ class OldVsmeLayoutStrategy(DisclosureLayoutStrategy, strategy_name="old_vsme"):
             first_parts = labelled[0][1]
             category = first_parts[1] if len(first_parts) >= 2 else first_parts[0]
 
-            heading = f"[{_short_vsme_prefix(prefix)}] - {category}"
+            heading = f"[{code}] - {category}"
             items = [
                 TocItem(idx=idx, label=_item_label(parts)) for idx, parts in labelled
             ]
