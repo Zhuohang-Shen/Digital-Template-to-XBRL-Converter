@@ -29,6 +29,7 @@ from mireport.taxonomy import (
     Taxonomy,
 )
 
+
 def _fact(
     *, numeric=False, unit=None, period=None, concept=None, aspects=None, value="x"
 ):
