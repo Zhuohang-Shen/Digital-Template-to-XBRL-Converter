@@ -1,6 +1,7 @@
 """GET-only route smoke tests — no conversion required."""
 
 import json
+import logging
 
 import mireport
 from digital_converter_webapp import create_app
@@ -58,6 +59,11 @@ class TestBrokenConfig:
         app = create_app({"TESTING": True, "DEPLOYMENT": "production"})
         resp = app.test_client().get("/")
         assert resp.status_code == 503
+
+    def test_dropped_session_file_dir_warns(self, caplog, tmp_path):
+        with caplog.at_level(logging.WARNING, logger="digital_converter_webapp"):
+            create_app({"TESTING": True, "SESSION_FILE_DIR": str(tmp_path)})
+        assert any("SESSION_FILE_DIR" in r.message for r in caplog.records)
 
 
 class TestDebugSession:

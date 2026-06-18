@@ -1,4 +1,5 @@
 import pytest
+from cachelib.file import FileSystemCache
 
 from digital_converter_webapp import create_app
 
@@ -6,7 +7,7 @@ from digital_converter_webapp import create_app
 def _test_config(session_dir, **overrides):
     return {
         "TESTING": True,
-        "SESSION_FILE_DIR": str(session_dir),
+        "SESSION_CACHELIB": FileSystemCache(str(session_dir)),
         "SECRET_KEY": "test-secret",
         **overrides,
     }
