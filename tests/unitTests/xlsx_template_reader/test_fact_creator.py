@@ -3,11 +3,12 @@ from pathlib import Path
 import pytest
 
 from mireport.conversionresults import ConversionResultsBuilder
+from mireport.data.disclosures import VSME_DEFAULTS
 from mireport.report import InlineReport
 from mireport.taxonomy import getTaxonomy
 from mireport.xlsx_template_reader._fact_creator import FactCreator
 from mireport.xlsx_template_reader._reader import WorkbookReader
-from mireport.xlsx_template_reader.processor import VSME_DEFAULTS, XlsxProcessor
+from mireport.xlsx_template_reader.processor import XlsxProcessor
 from mireport.xlsx_template_reader.util import loadExcelFromPathOrFileLike
 
 SAMPLE = (

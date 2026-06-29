@@ -15,6 +15,7 @@ from rich.text import Text
 import mireport
 from mireport.cli import configure_rich_output
 from mireport.cli import console_print as print
+from mireport.data.disclosures import VSME_DEFAULTS
 from mireport.taxonomy import (
     DOCUMENTATION_LABEL_ROLE,
     LABEL_SUFFIX_PATTERN,
@@ -31,7 +32,6 @@ from mireport.taxonomy import (
     listTaxonomies,
 )
 from mireport.taxonomy_checker import TaxonomyChecker
-from mireport.xlsx_template_reader.processor import VSME_DEFAULTS
 
 
 class Mismatch(NamedTuple):

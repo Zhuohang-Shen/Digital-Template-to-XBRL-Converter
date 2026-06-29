@@ -39,9 +39,6 @@ from mireport.xlsx_template_reader.util import (
 
 L = logging.getLogger(__name__)
 
-# Re-exported for callers/tests that import VSME_DEFAULTS from this module.
-__all__ = ["VSME_DEFAULTS", "XlsxProcessor", "TemplateCheckResult"]
-
 
 class TemplateCheckResult(NamedTuple):
     validation_is_incomplete: bool

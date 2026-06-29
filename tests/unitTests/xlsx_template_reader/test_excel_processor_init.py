@@ -3,7 +3,8 @@ from pathlib import Path
 import pytest
 
 from mireport.conversionresults import ConversionResultsBuilder
-from mireport.xlsx_template_reader.processor import VSME_DEFAULTS, XlsxProcessor
+from mireport.data.disclosures import VSME_DEFAULTS
+from mireport.xlsx_template_reader.processor import XlsxProcessor
 
 SAMPLE = (
     Path(__file__).parent.parent.parent
