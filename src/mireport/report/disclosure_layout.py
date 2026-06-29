@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from itertools import groupby
 from typing import TYPE_CHECKING, ClassVar
 
-from mireport.data.disclosures import VSME_DEFAULTS
+from mireport.data.disclosures import getDisclosureConfig
 from mireport.stringutil import stripLabelPrefix
 
 if TYPE_CHECKING:
     from mireport.report.layout import ReportSection
+
+L = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -26,8 +29,11 @@ class TocGroup:
 
 class DisclosureLayoutStrategy(ABC):
     _STRATEGY_MAP: ClassVar[dict[str, type[DisclosureLayoutStrategy]]] = {}
+    _FALLBACK_STRATEGY: ClassVar[type[DisclosureLayoutStrategy] | None] = None
 
-    def __init_subclass__(cls, strategy_name: str, **kwargs: object) -> None:
+    def __init_subclass__(
+        cls, strategy_name: str, fallback: bool = False, **kwargs: object
+    ) -> None:
         super().__init_subclass__(**kwargs)
         if strategy_name in DisclosureLayoutStrategy._STRATEGY_MAP:
             raise ValueError(
@@ -35,21 +41,34 @@ class DisclosureLayoutStrategy(ABC):
                 f" by {DisclosureLayoutStrategy._STRATEGY_MAP[strategy_name].__name__}"
             )
         DisclosureLayoutStrategy._STRATEGY_MAP[strategy_name] = cls
+        if fallback:
+            if (existing := DisclosureLayoutStrategy._FALLBACK_STRATEGY) is not None:
+                raise ValueError(
+                    f"Fallback strategy already registered by {existing.__name__}"
+                )
+            DisclosureLayoutStrategy._FALLBACK_STRATEGY = cls
+
+    @classmethod
+    def _fallback(cls) -> DisclosureLayoutStrategy:
+        if (fallback := cls._FALLBACK_STRATEGY) is None:
+            raise ValueError("No fallback layout strategy registered")
+        return fallback()
 
     @classmethod
     def for_entry_point(cls, entry_point: str) -> DisclosureLayoutStrategy:
-        taxonomy_eps = VSME_DEFAULTS["taxonomyEntryPoints"]
-        all_vsme = frozenset(
-            [
-                taxonomy_eps["supportedEntryPoint"],
-                *taxonomy_eps.get("oldEntryPoints", []),
-            ]
+        if (config := getDisclosureConfig(entry_point)) is None:
+            return cls._fallback()
+        layout = config["layoutStrategy"]
+        ep_overrides = layout.get("entryPoints", {})
+        strategy_name = ep_overrides.get(entry_point, layout.get("default"))
+        if (strategy_cls := cls._STRATEGY_MAP.get(strategy_name)) is not None:
+            return strategy_cls()
+        L.warning(
+            "Unknown layout strategy %r for entry point %r; using fallback",
+            strategy_name,
+            entry_point,
         )
-        if entry_point not in all_vsme:
-            return DefaultLayoutStrategy()
-        layout = VSME_DEFAULTS["layoutStrategy"]
-        strategy_name = layout["entryPoints"].get(entry_point, layout["default"])
-        return cls._STRATEGY_MAP.get(strategy_name, DefaultLayoutStrategy)()
+        return cls._fallback()
 
     def organise_sections(self, sections: list[ReportSection]) -> list[ReportSection]:
         return sections
@@ -68,8 +87,10 @@ class DisclosureLayoutStrategy(ABC):
     def page_group_key(self, section: ReportSection, language: str) -> str: ...
 
 
-class DefaultLayoutStrategy(DisclosureLayoutStrategy, strategy_name="default"):
-    """Generic strategy: flat TOC, one section per page, labels unchanged."""
+class SimpleLayoutStrategy(
+    DisclosureLayoutStrategy, strategy_name="simple", fallback=True
+):
+    """Generic fallback: flat TOC, one section per page, labels unchanged."""
 
     def page_group_key(self, section: ReportSection, language: str) -> str:
         return section.presentation.roleUri
@@ -95,25 +116,41 @@ _VSME_SECTION_AFFINITY: dict[str, str] = {
 }
 
 
-def _old_vsme_prefix(section: ReportSection) -> str:
-    return section.presentation.definition.split(".")[0]
+def _old_vsme_section_code(section: ReportSection) -> str:
+    """Canonical short code for an old-VSME section definition,
+    e.g. '[B07.000] - General information …' -> 'B7'.
+
+    Falls back to the raw token (minus any leading '[') when it doesn't match
+    the expected <letter><digits> shape."""
+    token = section.presentation.definition.split(".", 1)[0].removeprefix("[")
+    if (digits := token[1:]).isdigit():
+        return f"{token[0]}{int(digits)}"
+    L.warning(
+        "Old-VSME section definition %r does not match the expected"
+        " <letter><digits> shape; using %r as its section code.",
+        section.presentation.definition,
+        token,
+    )
+    return token
 
 
 def _move_sections_after(
-    sections: list[ReportSection], source_prefix: str, target_prefix: str
+    sections: list[ReportSection], source: str, target: str
 ) -> list[ReportSection]:
-    prefixes = {id(s): _old_vsme_prefix(s) for s in sections}
-    to_move = [s for s in sections if prefixes[id(s)] == source_prefix]
-    if not to_move:
-        return sections
-    remaining = [s for s in sections if prefixes[id(s)] != source_prefix]
-    insert_pos = next(
-        (i + 1 for i, s in enumerate(remaining) if prefixes[id(s)] == target_prefix),
-        None,
+    """Move every section whose code is `source` to immediately after the last
+    section whose code is `target`. No-op if either group is absent."""
+    coded = [(s, _old_vsme_section_code(s)) for s in sections]
+    to_move = [s for s, code in coded if code == source]
+    remaining = [s for s, code in coded if code != source]
+    last_target = max(
+        (i for i, (_, code) in enumerate(coded) if code == target and code != source),
+        default=None,
     )
-    if insert_pos is None:
+    if not to_move or last_target is None:
         return sections
-    return remaining[:insert_pos] + to_move + remaining[insert_pos:]
+    # last_target indexes `coded`; translate to an index within `remaining`
+    insert_at = sum(1 for _, code in coded[: last_target + 1] if code != source)
+    return remaining[:insert_at] + to_move + remaining[insert_at:]
 
 
 def _split_label(label: str) -> list[str]:
@@ -130,12 +167,18 @@ class OldVsmeLayoutStrategy(DisclosureLayoutStrategy, strategy_name="old_vsme"):
     """Handles definitions like '[B01.000] - General information - Basis for Preparation'."""
 
     def organise_sections(self, sections: list[ReportSection]) -> list[ReportSection]:
-        return _move_sections_after(sections, "[C02", "[B02")
+        return _move_sections_after(sections, "C2", "B2")
+
+    def section_label(self, section: ReportSection, language: str) -> str:
+        """Replace the '[C06.000]' prefix with the canonical code, e.g.
+        '[C06.000] - General - Basis' -> 'C6 - General - Basis'."""
+        code = _old_vsme_section_code(section)
+        _, *rest = _split_label(section.getLabel(language))
+        return " - ".join([code, *rest])
 
     def page_group_key(self, section: ReportSection, language: str) -> str:
-        raw = section.presentation.definition.split(".")[0].lstrip("[")  # e.g. 'B07'
-        short = raw[0] + str(int(suffix)) if (suffix := raw[1:]).isdigit() else raw
-        return _VSME_SECTION_AFFINITY.get(short, short)
+        code = _old_vsme_section_code(section)
+        return _VSME_SECTION_AFFINITY.get(code, code)
 
     def build_toc(
         self,
@@ -143,26 +186,21 @@ class OldVsmeLayoutStrategy(DisclosureLayoutStrategy, strategy_name="old_vsme"):
         language: str,
     ) -> list[TocGroup]:
         groups: list[TocGroup] = []
-        for prefix, group_iter in groupby(
+        for code, group_iter in groupby(
             enumerate(sections, start=1),
-            key=lambda t: t[1].presentation.definition.split(".")[0],
+            key=lambda t: _old_vsme_section_code(t[1]),
         ):
-            items_list = list(group_iter)
-            # Short prefix: strip '[', e.g. '[B01' → 'B1'
-            raw = prefix.lstrip("[")
-            short_prefix = (
-                raw[0] + str(int(suffix)) if (suffix := raw[1:]).isdigit() else raw
-            )
+            labelled = [
+                (idx, _split_label(s.getLabel(language))) for idx, s in group_iter
+            ]
 
             # Category from the first section in the group
-            first_label = items_list[0][1].getLabel(language)
-            first_parts = _split_label(first_label)
-            category = first_parts[1] if len(first_parts) >= 2 else first_label
+            first_parts = labelled[0][1]
+            category = first_parts[1] if len(first_parts) >= 2 else first_parts[0]
 
-            heading = f"[{short_prefix}] - {category}"
+            heading = f"[{code}] - {category}"
             items = [
-                TocItem(idx=idx, label=_item_label(_split_label(s.getLabel(language))))
-                for idx, s in items_list
+                TocItem(idx=idx, label=_item_label(parts)) for idx, parts in labelled
             ]
             groups.append(TocGroup(heading=heading, items=items))
 
@@ -179,38 +217,24 @@ class VsmeLayoutStrategy(DisclosureLayoutStrategy, strategy_name="vsme"):
         prefix = _split_label(stripLabelPrefix(section.getLabel(language)))[0]
         return _VSME_SECTION_AFFINITY.get(prefix, prefix)
 
-    @staticmethod
-    def _toc_group_key(section: ReportSection, language: str) -> str:
-        # Group by first part of stripped label, e.g. 'B1' from 'B1 - General information - …'
-        return _split_label(stripLabelPrefix(section.getLabel(language)))[0]
-
     def build_toc(
         self,
         sections: list[ReportSection],
         language: str,
     ) -> list[TocGroup]:
+        labelled = [
+            (idx, _split_label(stripLabelPrefix(s.getLabel(language))))
+            for idx, s in enumerate(sections, start=1)
+        ]
         groups: list[TocGroup] = []
-        for _, group_iter in groupby(
-            enumerate(sections, start=1),
-            key=lambda t: self._toc_group_key(t[1], language),
-        ):
-            items_list = list(group_iter)
-
-            first_parts = _split_label(
-                stripLabelPrefix(items_list[0][1].getLabel(language))
-            )
+        # Group by first part of stripped label, e.g. 'B1' from 'B1 - General information - …'
+        for _, group_iter in groupby(labelled, key=lambda t: t[1][0]):
+            group = list(group_iter)
+            first_parts = group[0][1]
             heading = (
                 " - ".join(first_parts[:2]) if len(first_parts) >= 2 else first_parts[0]
             )
-            items = [
-                TocItem(
-                    idx=idx,
-                    label=_item_label(
-                        _split_label(stripLabelPrefix(s.getLabel(language)))
-                    ),
-                )
-                for idx, s in items_list
-            ]
+            items = [TocItem(idx=idx, label=_item_label(parts)) for idx, parts in group]
             groups.append(TocGroup(heading=heading, items=items))
 
         return groups
