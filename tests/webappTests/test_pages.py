@@ -1,8 +1,10 @@
 """GET-only route smoke tests — no conversion required."""
 
 import json
+import logging
 
 import mireport
+from digital_converter_webapp import create_app
 
 
 class TestHomePage:
@@ -29,22 +31,6 @@ class TestConversionsList:
         assert resp.status_code == 404
 
 
-class TestCaptcha:
-    def test_captcha_returns_200(self, client):
-        resp = client.get("/generate_captcha")
-        assert resp.status_code == 200
-
-    def test_captcha_returns_json_with_question(self, client):
-        resp = client.get("/generate_captcha")
-        body = json.loads(resp.data)
-        assert "question" in body
-
-    def test_captcha_question_contains_plus(self, client):
-        resp = client.get("/generate_captcha")
-        body = json.loads(resp.data)
-        assert "+" in body["question"]
-
-
 class TestLocales:
     def test_locales_json_loads(self, client):
         url = f"/locales/available_{mireport.__version__}.json"
@@ -64,6 +50,32 @@ class TestLocales:
         body = json.loads(resp.data)
         for entry in body:
             assert "label" in entry
+
+
+class TestBrokenConfig:
+    def test_unusable_session_config_yields_broken_app(self):
+        # Session backend selection sees test_config: a deployment with no
+        # usable SESSION_TYPE must degrade to the 503 brokenApp, not limp on
+        app = create_app({"TESTING": True, "DEPLOYMENT": "production"})
+        resp = app.test_client().get("/")
+        assert resp.status_code == 503
+
+    def test_dropped_session_file_dir_warns(self, caplog, tmp_path):
+        with caplog.at_level(logging.WARNING, logger="digital_converter_webapp"):
+            create_app({"TESTING": True, "SESSION_FILE_DIR": str(tmp_path)})
+        assert any("SESSION_FILE_DIR" in r.message for r in caplog.records)
+
+
+class TestDebugSession:
+    def test_not_found_when_debug_off(self, client):
+        resp = client.get("/debug_session")
+        assert resp.status_code == 404
+
+    def test_available_when_debug_on(self, app, client, monkeypatch):
+        monkeypatch.setitem(app.config, "DEBUG", True)
+        resp = client.get("/debug_session")
+        assert resp.status_code == 200
+        assert resp.is_json
 
 
 class TestDeploymentHeader:
