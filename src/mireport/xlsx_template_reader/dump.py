@@ -25,6 +25,11 @@ class NamedRangeException(OpenPyXlRelatedException):
         return f"{self.message} {details}"
 
 
+def list_named_ranges(wb: Workbook) -> list[tuple[str, str]]:
+    """Return (name, raw_value) for every defined name in the workbook, in iteration order."""
+    return [(dn.name, dn.attr_text) for dn in wb.defined_names.values()]
+
+
 def getNamedRanges(
     wb: Workbook,
 ) -> tuple[dict[str, list[CellValueType]], list[NamedRangeException]]:
@@ -43,8 +48,15 @@ def getNamedRanges(
             )
             continue
 
-        sheet_name, cell_range = list(dn.destinations)[0]
+        try:
+            parts = next(iter(dn.destinations))
+        except (ValueError, AttributeError):
+            errors.append(
+                NamedRangeException("Named range has invalid destinations.", dn)
+            )
+            continue
 
+        sheet_name, cell_range = parts
         if sheet_name not in wb:
             errors.append(
                 NamedRangeException(

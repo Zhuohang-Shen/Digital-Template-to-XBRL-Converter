@@ -39,6 +39,18 @@ class CellRangeMetadata:
     def maximum_height(self) -> int:
         return self.cellRange.max_row - self.cellRange.min_row + 1
 
+    def contains(self, other: CellRangeMetadata) -> bool:
+        """True if other is on the same worksheet and fully within this range."""
+        return self.worksheet is other.worksheet and self.cellRange.issuperset(
+            other.cellRange
+        )
+
+    def overlaps(self, other: CellRangeMetadata) -> bool:
+        """True if other is on the same worksheet and shares any cells with this range."""
+        return self.worksheet is other.worksheet and not self.cellRange.isdisjoint(
+            other.cellRange
+        )
+
 
 @dataclass(slots=True, eq=True, frozen=True)
 class XbrlConceptCellRangeMetadata(CellRangeMetadata):

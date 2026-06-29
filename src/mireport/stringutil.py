@@ -1,3 +1,5 @@
+from markupsafe import Markup
+
 _Unicode_Dash_Translation = str.maketrans(
     {
         "\N{EM DASH}": "\N{HYPHEN-MINUS}",
@@ -63,6 +65,14 @@ def stripLabelSuffix(text: str) -> str:
         return text
     before, sep, _ = text.rpartition("[")
     return stripped if sep and (stripped := before.rstrip()) else text
+
+
+def stripLabelPrefix(text: str) -> str:
+    """Strip any [asdf] prefix from label text."""
+    if not text.lstrip().startswith("["):
+        return text
+    _, sep, after = text.partition("]")
+    return stripped if sep and (stripped := after.lstrip()) else text
 
 
 NumberGroupingApostrophes = frozenset("'`´’′")
@@ -131,3 +141,32 @@ def xml_clean(data: str) -> str:
     """Cleans a string for inclusion in XML content by escaping special characters
     and removing vertical tabs, tabs, form-feeds, carriage returns, and newlines."""
     return data.translate(_xmlCarefulHandling_Translation_Table)
+
+
+def str_to_markupsafe(text: str) -> Markup:
+    """Convert a (possibly multiline) string to a Markup object, escaping it for safe HTML display. Newlines are converted to <br /> tags."""
+    return Markup("<br />").join(Markup.escape(p) for p in text.splitlines())
+
+
+_TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+
+
+def truthy(value: str | bool | int | None) -> bool:
+    """Interpret config/query-style values as booleans ("false" is False).
+
+    Unrecognised strings are False (right for query params); ints other than
+    0/1 raise ValueError and unsupported types raise TypeError rather than
+    guessing."""
+    match value:
+        case bool() | None:
+            return bool(value)
+        case str():
+            return value.strip().lower() in _TRUTHY_STRINGS
+        case int() if value in (0, 1):
+            return bool(value)
+        case int():
+            raise ValueError(
+                f"Cannot interpret {value!r} as a boolean. Try 1 or 0 instead."
+            )
+        case _:
+            raise TypeError(f"Cannot interpret {value!r} as a boolean")

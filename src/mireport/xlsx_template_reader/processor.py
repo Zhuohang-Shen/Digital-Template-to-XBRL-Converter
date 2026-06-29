@@ -16,9 +16,8 @@ from mireport.conversionresults import (
     MessageType,
     Severity,
 )
-from mireport.data import disclosures
+from mireport.data.disclosures import VSME_DEFAULTS
 from mireport.exceptions import EarlyAbortException
-from mireport.json import getObject, getResource
 from mireport.localise import as_xmllang, get_locale_from_str
 from mireport.report import InlineReport
 from mireport.taxonomy import (
@@ -40,7 +39,8 @@ from mireport.xlsx_template_reader.util import (
 
 L = logging.getLogger(__name__)
 
-VSME_DEFAULTS: dict = getObject(getResource(disclosures, "vsme.json"))
+# Re-exported for callers/tests that import VSME_DEFAULTS from this module.
+__all__ = ["VSME_DEFAULTS", "XlsxProcessor", "TemplateCheckResult"]
 
 
 class TemplateCheckResult(NamedTuple):
