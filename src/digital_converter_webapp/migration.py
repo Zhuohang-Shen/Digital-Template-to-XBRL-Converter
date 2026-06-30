@@ -151,7 +151,7 @@ def migrationPage(id: str) -> Response:
                 conversion_id=id,
                 filename=excel.filename,
                 version=version,
-                newest_version=OUR_VERSION_HOLDER,
+                newest_version=OUR_VERSION_HOLDER.strip_build_metadata,
                 has_migration_results=has_migration_results,
                 elapsed=conversion.get("migration_elapsed"),
                 migration_issues=conversion.get("migration_issues", []),

@@ -386,7 +386,7 @@ class XlsxProcessor:
             template_version_name
         )
         excel_version = VersionHolder.parse_safe(template_version_string)
-        converter_version = OUR_VERSION_HOLDER
+        converter_version = OUR_VERSION_HOLDER.strip_build_metadata
 
         major_minor_match = (
             excel_version is not None
