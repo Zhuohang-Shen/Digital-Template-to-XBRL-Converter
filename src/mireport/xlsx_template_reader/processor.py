@@ -29,12 +29,12 @@ from mireport.version import OUR_VERSION_HOLDER, VersionHolder
 from mireport.xlsx_template_reader._bindings import WorkbookBindings
 from mireport.xlsx_template_reader._constants import (
     EXCEL_VALUES_TO_BE_TREATED_AS_NONE_VALUE,
+    is_error_value,
 )
 from mireport.xlsx_template_reader._fact_creator import FactCreator
 from mireport.xlsx_template_reader._reader import WorkbookReader
 from mireport.xlsx_template_reader.util import (
     excelDefinedNameRef,
-    is_error_value,
     loadExcelFromPathOrFileLike,
 )
 
