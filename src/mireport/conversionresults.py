@@ -13,10 +13,19 @@ if TYPE_CHECKING:
     from types import TracebackType
     from typing import Mapping, Optional, Self, Type
 
+from markupsafe import Markup
+
 from mireport.exceptions import EarlyAbortException
-from mireport.stringutil import format_time_ns
+from mireport.stringutil import format_time_ns, str_to_markupsafe
 from mireport.taxonomy import Concept
 from mireport.xml import QName
+
+
+class MessageText(str):
+    """str subclass that renders as HTML-safe (escaped, newlines as <br />) in Jinja2 templates."""
+
+    def __html__(self) -> Markup:
+        return str_to_markupsafe(self)
 
 
 class Severity(StrEnum):
@@ -106,7 +115,7 @@ class Message:
         conceptQName: Optional[str] = None,
         excelReference: Optional[str] = None,
     ):
-        self.messageText: str = messageText
+        self.messageText: MessageText = MessageText(messageText)
         self.severity: Severity = severity
         self.messageType: MessageType = messageType
         self.conceptQName: Optional[str] = conceptQName
@@ -135,7 +144,7 @@ class Message:
 
     def toDict(self) -> dict:
         d = {
-            "m": self.messageText,
+            "m": str(self.messageText),
             "s": self.severity.name,
             "mt": self.messageType.name,
             "c": self.conceptQName,
