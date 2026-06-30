@@ -20,3 +20,7 @@ EXTERNAL_VALUES_RANGE = "template_external_values"
 EXCEL_ERROR_VALUES: frozenset[str] = frozenset(ERROR_CODES)
 GOOGLE_SHEET_ERROR_VALUES: frozenset[str] = frozenset({"#ERROR!"})
 ALL_ERROR_VALUES: frozenset[str] = EXCEL_ERROR_VALUES.union(GOOGLE_SHEET_ERROR_VALUES)
+
+
+def is_error_value(v: str) -> bool:
+    return v in ALL_ERROR_VALUES

@@ -22,7 +22,7 @@ from openpyxl.worksheet.cell_range import CellRange
 from openpyxl.worksheet.worksheet import Worksheet
 
 from mireport.typealiases import DecimalPlaces
-from mireport.xlsx_template_reader._constants import ALL_ERROR_VALUES, CellType
+from mireport.xlsx_template_reader._constants import CellType
 
 
 def conceptsToText(concepts: Iterable[Concept]) -> str:
@@ -137,7 +137,3 @@ def getDateFromValue(value: object) -> date:
         raise ValueError(f"Unsupported date string: '{value}'")
     else:
         raise TypeError(f"Unsupported type for date conversion: {type(value).__name__}")
-
-
-def is_error_value(v: str) -> bool:
-    return v in ALL_ERROR_VALUES
