@@ -34,6 +34,7 @@ from mireport.xlsx_template_reader._fact_creator import FactCreator
 from mireport.xlsx_template_reader._reader import WorkbookReader
 from mireport.xlsx_template_reader.util import (
     excelDefinedNameRef,
+    is_error_value,
     loadExcelFromPathOrFileLike,
 )
 
@@ -254,6 +255,7 @@ class XlsxProcessor:
                 if (
                     not aoixValue
                     or aoixValue in EXCEL_VALUES_TO_BE_TREATED_AS_NONE_VALUE
+                    or is_error_value(aoixValue)
                 ):
                     self._results.addMessage(
                         f"Excel report must have a valid value for named range {namedRangeName}.",
